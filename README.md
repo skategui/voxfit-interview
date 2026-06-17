@@ -29,6 +29,38 @@ event-driven ManualReview store deduping a re-delivered event.
 
 ---
 
+## How I used AI to build this
+
+I drove the AI; I did not let it drive me. The process was deliberately staged so I own every decision:
+
+1. **Spec first, in plan mode (no code).** I worked the plan until it matched *my* intent on two axes:
+   - **Code architecture** — one concern per file/module, enums for closed vocabularies, file/function
+     length limits, an explicit test strategy.
+   - **Production reality** — edge cases, an event-driven shape, multi-client configurability, etc.
+   Nothing got written until the plan reflected what I wanted and what I could defend.
+
+2. **Execution — Opus 4.8 in "ultracode".** Once the plan was right, the model implemented it.
+
+3. **Independent review — separate sessions, no shared context.** A few sub-agents reviewed the result in
+   *fresh* sessions (so no context leaked in): code complexity, does it match the spec, and adversarial
+   bug-hunting. This caught **real** defects I then fixed and pinned with tests, rather than trusting the
+   first draft:
+   - off-hours dialing (no `callWindow` defaulted to 00:00–24:00 → could call a debtor at 03:00);
+   - a determinism bug (equal-timestamp tool events reordered the output);
+   - a "paid now" case with a *failed* payment link stranded forever (no webhook would ever fire);
+   - an unsound `JSON.parse ... as` cast at the store's trust boundary.
+
+4. **Self-challenge.** I then interrogated the build myself: are the edge cases *actually* covered? how are
+   null / missing values handled? is every manual-review path real? is money never auto-completed? The
+   two-phase classifier and the "3am test" both came out of this scrutiny, not the first generation.
+
+5. **Self-verification.** Finally I ran it myself — `npm test`, `npm run demo` — and read the code line by
+   line. Every business rule has a test that encodes *why* it matters (`tests/spec-coverage-*.test.ts` maps
+   1:1 to the brief; `tests/manual-review-paths.test.ts` enumerates every human-fallback trigger), so the
+   AI's output can't silently regress the intent.
+
+---
+
 ## Design in one picture
 
 The decision function is **pure** (no I/O, no `Date.now()`). The **orchestrator** is the event-driven
@@ -167,15 +199,22 @@ classification only triggers a cheap, reversible reschedule, never an exclusion.
 
 A collections system runs on an at-least-once bus; **never assume exactly-once or in-order delivery.**
 
+**Who owns each fix** (the "Owner" column) — naming the boundary is the point:
+
+- **Decision engine** — the pure functions in this repo (`src/decision`). ✅ built here.
+- **Scheduler** — the downstream worker that executes queued `call` / `payment_reminder` actions. ◻ designed, not built.
+- **Sweeper** — a cron that finds calls/cases stuck with no decision. ◻ designed, not built.
+- **Stripe reconciler** — a cron that polls Stripe for payments the webhook missed. ◻ designed, not built.
+
 | Scenario | Containment | Owner |
 |---|---|---|
-| Duplicate `CallCompleted` | pure fn is deterministic → same Decision; executor dedupes by action key | fn + executor |
-| Payment arrives **before** the call decision | case already `completed`/`amountRemaining≤0` → short-circuit | fn |
-| Payment arrives **after** a retry was queued | queued action is a snapshot → executor **check-then-acts** on live state before firing | executor |
-| Out-of-order `CallCompleted` | **watermark guard**: `performedAt ≤ case.lastDecisionAt` → no-op (no backward transition) | fn |
-| Out-of-order / duplicate `toolEvents` | sorted by `createdAt` with stable tiebreak, deduped, latest link wins | fn |
-| `CallCompleted` never arrives | call-without-decision sweeper cron → manual_review | sweeper |
-| `PaymentReceived` never arrives (lost webhook) | Stripe-poll reconciler + confirmation silence-timeout | reconciler |
+| Duplicate `CallCompleted` | engine is deterministic → identical Decision; the Scheduler dedupes by `scheduledAction.id` | Decision engine + Scheduler |
+| Payment arrives **before** the call decision | case is already `completed` / `amountRemaining ≤ 0` → short-circuit, no action | Decision engine |
+| Payment arrives **after** a retry was queued | a queued action is a snapshot → the Scheduler **re-reads live case state** before dialing; paid → drop the call | Scheduler |
+| Out-of-order `CallCompleted` (older than the last) | **watermark guard**: `performedAt ≤ case.lastDecisionAt` → no-op (no backward transition) | Decision engine |
+| Out-of-order / duplicate `toolEvents` | sorted by `createdAt` (stable tiebreak), deduped, latest link wins | Decision engine |
+| `CallCompleted` never arrives | a Sweeper cron flags calls that produced no decision → manual_review | Sweeper |
+| `PaymentReceived` never arrives (lost webhook) | the Stripe reconciler polls Stripe + a `wait_payment_confirmation` silence-timeout | Stripe reconciler |
 
 Two principles make this safe: **(1)** state is monotonic + watermark-guarded (a case never moves
 backward; terminal states absorb late events); **(2)** decisions are *snapshots* — the Scheduler
@@ -228,15 +267,25 @@ The brief is intentionally vague. Things I'd push back on or clarify before prod
 
 ### Business cases I'd volunteer (and how the system should treat them)
 
-Partial payment → review · payment **before** the scheduled call → already settled, cancel pending,
-webhook-driven `completed` · **promise deadline expired unpaid → cron relaunch (BUILT: `promiseExpiry.ts`,
-capped to avoid an infinite loop)** · **payment received before the relaunch fires → `completed`, never
-re-dial (BUILT: reads live `amountRemaining`)** · payment **after** a relaunch was scheduled → webhook
-wins, executor dedupes on case state · double payment → review + refund flag ·
-lost/duplicate Stripe webhook → reconciler / idempotent on `event.id` · low-confidence LLM → review ·
-multi-category classification → deterministic precedence picks one; hard-vs-soft conflict → review ·
-infinite relaunch loop → `maxAttempts` cap → review · pays then disputes → `disputed` wins → review ·
-`do_not_call` after an active plan → `perm_excluded`, cancel reminders, flag the balance for a human.
+The brief covers the happy paths. These are the cases it does **not** spell out — the ones that actually
+break a collections system in production. `Status` shows what is **built** in this engine vs **designed**
+(documented behavior an owning service would implement).
+
+| # | Case (what happens in reality) | How the system should treat it | Status |
+|---|---|---|---|
+| 1 | **Promise deadline passes, still unpaid** | Timer relaunches the case, **capped** by `maxAttempts` so it can't loop forever; cap reached → review | **Built** — `promiseExpiry.ts` |
+| 2 | **Payment lands *before* the relaunch fires** | Read the **live** `amountRemaining`; if paid → `completed`, never re-dial a payer | **Built** — `promiseExpiry.ts` |
+| 3 | **Payment lands *after* a relaunch was scheduled** | The Stripe webhook wins; the scheduler re-checks live case state before dialing and drops the call | Designed (executor) |
+| 4 | **Partial payment** (paid €40 of €100) | Can't auto-complete or relaunch the full amount → review | Designed |
+| 5 | **Double payment** (paid twice) | Never silently keep → review + refund flag | Designed |
+| 6 | **Lost or duplicate Stripe webhook** | Reconciler polls Stripe; webhook handler is idempotent on `event.id` | Designed (out-of-scope dependency) |
+| 7 | **Low-confidence / ambiguous LLM output** | Route to review (the spec has no confidence field — recommend adding one) | Designed |
+| 8 | **One call fits several categories** | Deterministic precedence picks exactly one; a hard-vs-soft contradiction → review | **Built** — `classify.ts` |
+| 9 | **Infinite relaunch loop** | `maxAttempts` cap → review | **Built** |
+| 10 | **Debtor pays, then disputes** | `disputed` outranks a prior `wait_payment_confirmation` → review (legal/chargeback) | Designed (cross-event) |
+| 11 | **`do_not_call` while a payment plan is active** | Compliance wins: `perm_excluded`, cancel reminders, flag the outstanding balance for a human | **Built** — `guards.ts` + `transitions.ts` |
+
+Recurring reflex across all of them: **when money or intent is ambiguous, a human decides.**
 
 ---
 
@@ -268,23 +317,3 @@ purity + the local ManualReview file · partial payments go to review · no conf
 only · no lost-webhook reconciliation (assumed external cron) · free-text exclusion reasons (no enum
 taxonomy) · per-client outcome config not built (single map, but isolated for an easy swap) · no aging/SLA
 for a stuck `wait_payment_confirmation` beyond the reconciler's timeout.
-
----
-
-## A note on AI tool use
-
-I used an AI assistant to draft boilerplate and tests faster, but I **validated the load-bearing parts by
-hand and by test**, not by trust. Concretely:
-
-- The **two-phase classifier** exists *because* a review caught that a flat cascade drops a payment on a
-  short "paid" call — there is a dedicated regression test (`B1 ORDERING BUG GUARD`).
-- The **3am test** (money never auto-completes without a webhook) was reasoned about explicitly and is asserted.
-- I ran an **adversarial multi-agent review** of the finished code. It surfaced real defects that I then
-  fixed and pinned with tests, rather than accepting the AI's first draft:
-  - off-hours dialing (no `callWindow` defaulted to 00:00–24:00 → could call a debtor at 03:00);
-  - a determinism bug (equal-timestamp tool events reordered output);
-  - a "paid now" case with a *failed* payment link stranded forever (no webhook would fire);
-  - an unsound `JSON.parse ... as` cast at the store's trust boundary.
-- Every business rule is covered by a test that encodes *why* it matters (`tests/spec-coverage.test.ts`
-  maps 1:1 to the brief; `tests/manual-review-paths.test.ts` enumerates every human-fallback trigger), so
-  the AI's output can't silently regress the intent.
