@@ -1,0 +1,23 @@
+{
+  "name": "voxfit-post-call-decision",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic post-call decision engine for an AI voice collections agent.",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "demo": "tsx src/demo.ts"
+  },
+  "dependencies": {
+    "luxon": "^3.5.0"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.4.2",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.9"
+  }
+}

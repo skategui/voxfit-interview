@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+*.log
+
+# Local ManualReview store artifact (no DB) — generated at runtime, not source.
+manual-review.json
