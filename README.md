@@ -317,3 +317,15 @@ purity + the local ManualReview file · partial payments go to review · no conf
 only · no lost-webhook reconciliation (assumed external cron) · free-text exclusion reasons (no enum
 taxonomy) · per-client outcome config not built (single map, but isolated for an easy swap) · no aging/SLA
 for a stuck `wait_payment_confirmation` beyond the reconciler's timeout.
+
+---
+
+## What would be necessary to reach production
+
+- **Circuit breaker** — trip on a flaky dependency (Stripe/Twilio/LLM) so we stop hammering it and degrade gracefully instead of cascading.
+- **Fallback** — every automated path needs a degraded one: dependency down → enqueue + retry later, or route the case to manual review rather than drop it.
+- **No single point of failure** — the bus, the scheduler, and the ManualReview store must be durable + redundant (real broker + DB + replicas); today the bus and store are in-process.
+- **Feature flags** — gate the engine (and risky rules) per client / per cohort, with a kill switch to fall back to human handling instantly.
+- **Observability** — structured logs, metrics (automation rate, review rate, relaunch loops), traces, and alerts on the money-safety invariants; the `auditLog` is the seed for this.
+- **Money amounts the engine doesn't yet model** — it currently treats payment as all-or-nothing (`amountRemaining ≤ 0`). Production needs: **partial payment** (paid €40 of €100 → keep the case open for the remainder), **overpayment** (paid more than owed → refund flag + review), and a **monthly installment plan** (a structured schedule of due dates, each with its own reminder + broken-instalment relaunch), not just a single `promise_to_pay` date.
+- **Close the documented edge cases** — the "Designed, not built" rows above: Stripe webhook delivery (idempotent on `event.id`) + lost-webhook reconciler, double-payment handling, the sweeper for missing `CallCompleted`, and per-client outcome config.
