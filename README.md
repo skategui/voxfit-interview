@@ -1,4 +1,4 @@
-# Voxfit — Post-Call Decision Engine
+# 📞 Voxfit — Post-Call Decision Engine
 
 A **deterministic, pure** decision engine for an AI voice collections agent. After each call it turns
 imperfect, sometimes contradictory signals (telephony metadata, LLM insights, tool events, case
@@ -14,7 +14,7 @@ buildPostCallDecision(input: PostCallInput): PostCallDecision
 
 ---
 
-## Run it
+## ▶️ Run it
 
 ```bash
 npm install
@@ -29,7 +29,7 @@ event-driven ManualReview store deduping a re-delivered event.
 
 ---
 
-## How I used AI to build this
+## 🤖 How I used AI to build this
 
 I drove the AI; I did not let it drive me. The process was deliberately staged so I own every decision:
 
@@ -61,7 +61,7 @@ I drove the AI; I did not let it drive me. The process was deliberately staged s
 
 ---
 
-## Design in one picture
+## 🏗️ Design in one picture
 
 The decision function is **pure** (no I/O, no `Date.now()`). The **orchestrator** is the event-driven
 layer around it. This separation is the core engineering choice: a pure policy core is deterministic and
@@ -117,7 +117,7 @@ event). Both are pure-decision + route-reviews; neither executes.
 
 ---
 
-## Case state machine
+## 🔄 Case state machine
 
 ```
                        ┌─────────────── perm_excluded ───────────────┐  (terminal)
@@ -165,7 +165,7 @@ on an LLM's say-so.
 
 ---
 
-## How a call is classified (two phases, not a flat cascade)
+## 🧭 How a call is classified (two phases, not a flat cascade)
 
 A naive first-match cascade has a real bug: the rule *"short call (<7s) AND no stronger human outcome →
 early_termination"* must already know the mapped LLM outcome — but a cascade computes that later, so it
@@ -195,7 +195,7 @@ classification only triggers a cheap, reversible reschedule, never an exclusion.
 
 ---
 
-## Event delivery: duplicates, out-of-order, missing (at-least-once)
+## 📨 Event delivery: duplicates, out-of-order, missing (at-least-once)
 
 A collections system runs on an at-least-once bus; **never assume exactly-once or in-order delivery.**
 
@@ -226,7 +226,7 @@ guard). The cross-event races are owned by the orchestrator layer; naming that b
 
 ---
 
-## Idempotency & determinism
+## 🔁 Idempotency & determinism
 
 - Pure function → re-running on the same input yields a **deeply-equal** Decision (asserted in tests).
   No `Date.now()` / `Math.random()`; the only clock is `input.now`.
@@ -247,7 +247,7 @@ real `transcript` is provided it's attached to the manual-review payload for the
 
 ---
 
-## Challenging the spec — gaps & recommendations
+## 🔍 Challenging the spec — gaps & recommendations
 
 The brief is intentionally vague. Things I'd push back on or clarify before production:
 
@@ -289,7 +289,7 @@ Recurring reflex across all of them: **when money or intent is ambiguous, a huma
 
 ---
 
-## Assumptions & tradeoffs
+## ⚖️ Assumptions & tradeoffs
 
 | Assumption | Tradeoff | Why acceptable |
 |---|---|---|
@@ -309,7 +309,7 @@ Recurring reflex across all of them: **when money or intent is ambiguous, a huma
 
 ---
 
-## Known limitations / unfinished
+## 🚧 Known limitations / unfinished
 
 No real Stripe/Twilio/DB (pure function only) · no persistence/idempotency store beyond function-level
 purity + the local ManualReview file · partial payments go to review · no confidence-threshold routing
@@ -320,7 +320,7 @@ for a stuck `wait_payment_confirmation` beyond the reconciler's timeout.
 
 ---
 
-## What would be necessary to reach production
+## 🚀 What would be necessary to reach production
 
 - **Circuit breaker** — trip on a flaky dependency (Stripe/Twilio/LLM) so we stop hammering it and degrade gracefully instead of cascading.
 - **Fallback** — every automated path needs a degraded one: dependency down → enqueue + retry later, or route the case to manual review rather than drop it.
